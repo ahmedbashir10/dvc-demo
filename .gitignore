@@ -3,3 +3,4 @@
 /data/sp500.csv
 model.pkl
 .ipynb_checkpoints/
+dvc-remote/
