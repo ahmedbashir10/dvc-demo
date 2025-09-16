@@ -40,10 +40,10 @@ jobs:
     # Configure DVC to use local cache as remote
     - name: Configure local DVC remote
       run: |
-        dvc remote add -d localremote ./dvc-cache || true
+        dvc remote add -d local_storage ./dvc-cache || true
 
     - name: Pull dataset from DVC remote
-      run: dvc pull -r localremote
+      run: dvc pull -r local_storage
 
     - name: Reproduce pipeline
       run: dvc repro
@@ -68,7 +68,7 @@ jobs:
           git commit -m "Update pipeline: MAE improved to $new_mae"
           git push
           # push the actual model.pkl + data to DVC remote
-          dvc push -r localremote
+          dvc push -r local_storage
         else
           echo "❌ No improvement, keeping old model."
         fi
