@@ -6,76 +6,66 @@ on:
       - "train.py"
       - "data/sp500.csv.dvc"
       - "dvc.yaml"
+  workflow_dispatch: {}
 
 permissions:
-  contents: write   
+  contents: write
 
 jobs:
   train:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v3
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.12"
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
 
-    - name: Install dependencies
-      run: |
-        pip install -r requirements.txt
-        pip install dvc jq
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install dvc jq
 
-    # Restore cached DVC data
-    - name: Restore DVC cache
-      uses: actions/cache@v3
-      with:
-        path: ./dvc-cache
-        key: dvc-cache-${{ github.sha }}
-        restore-keys: |
-          dvc-cache-
+      # Cache the DVC object store (this is where DVC keeps file blobs)
+      - name: Restore .dvc/cache
+        uses: actions/cache@v3
+        with:
+          path: .dvc/cache
+          key: dvc-obj-${{ runner.os }}-${{ hashFiles('**/*.dvc','dvc.lock') }}
+          restore-keys: |
+            dvc-obj-${{ runner.os }}-
 
-    # Configure DVC to use local cache as remote
-    - name: Configure local DVC remote
-      run: |
-        dvc remote add -d local_storage ./dvc-cache || true
+      # Make sure the relative remote folder exists on the runner
+      - name: Create relative file remote
+        run: mkdir -p dvc-remote
 
-    - name: Pull dataset from DVC remote
-      run: dvc pull -r local_storage
+      # Try to pull from the file remote (first CI run may have nothing yet)
+      - name: Pull data (best effort) and materialize files
+        run: |
+          dvc pull || true
+          dvc checkout
 
-    - name: Reproduce pipeline
-      run: dvc repro
+      - name: Reproduce pipeline
+        run: dvc repro
 
-    - name: Compare metrics
-      run: |
-        git show HEAD:metrics.json > old_metrics.json || echo "{}" > old_metrics.json
-        echo "Old metrics:" && cat old_metrics.json
-        echo "New metrics:" && cat metrics.json
-
-        old_mae=$(jq '.MAE' old_metrics.json)
-        new_mae=$(jq '.MAE' metrics.json)
-
-        echo "Old MAE: $old_mae, New MAE: $new_mae"
-
-        if (( $(echo "$new_mae < $old_mae" | bc -l) )); then
-          echo "Improvement found, committing updated pipeline metadata..."
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          # only commit metadata, NOT model.pkl
-          git add metrics.json dvc.lock
-          git commit -m "Update pipeline: MAE improved to $new_mae"
-          git push
-          # push the actual model.pkl + data to DVC remote
-          dvc push -r local_storage
-        else
-          echo "No improvement, keeping old model."
-        fi
-
-    # Save updated DVC cache back to GitHub cache
-    - name: Save DVC cache
-      uses: actions/cache@v3
-      with:
-        path: ./dvc-cache
-        key: dvc-cache-${{ github.sha }}
+      - name: Compare metrics
+        run: |
+          git show HEAD:metrics.json > old_metrics.json || echo "{}" > old_metrics.json
+          echo "Old metrics:" && cat old_metrics.json
+          echo "New metrics:" && cat metrics.json
+          old_mae=$(jq '.MAE' old_metrics.json)
+          new_mae=$(jq '.MAE' metrics.json)
+          echo "Old MAE: $old_mae, New MAE: $new_mae"
+          if (( $(echo "$new_mae < $old_mae" | bc -l) )); then
+            echo "✅ Improvement found, committing updated pipeline metadata..."
+            git config user.name github-actions
+            git config user.email github-actions@github.com
+            git add metrics.json dvc.lock
+            git commit -m "Update pipeline: MAE improved to $new_mae" || true
+            git push || true
+            dvc push                              # pushes to default local_storage -> dvc-remote
+          else
+            echo "❌ No improvement, keeping old model."
+          fi
