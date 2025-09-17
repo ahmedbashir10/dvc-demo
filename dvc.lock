@@ -9,8 +9,8 @@ stages:
       size: 305513
     - path: train.py
       hash: md5
-      md5: 0b2ca048c41425dc8d02121fa1277c5f
-      size: 1456
+      md5: 26a773653ecfe6b5e9efdb27beef3d8a
+      size: 1403
     outs:
     - path: metrics.json
       hash: md5
@@ -18,5 +18,5 @@ stages:
       size: 81
     - path: model.pkl
       hash: md5
-      md5: 2b64e6a80f3e3c5c0c4180956fc4e700
-      size: 674
+      md5: 6743115c1498bb587d800ee9bf82faef
+      size: 722
