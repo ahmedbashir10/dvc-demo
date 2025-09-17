@@ -1,4 +1,4 @@
 [core]
-    remote = localremote
-['remote "localremote"']
-    url = ../data/dvc-cache
+    remote = local_storage
+['remote "local_storage"']
+    url = ../data/dvc-remote
