@@ -4,78 +4,87 @@ on:
   push:
     paths:
       - "train.py"
-      - "data/sp500.csv.dvc"
+      - "data/**"
       - "dvc.yaml"
+      # - "params.yaml"   # uncomment if you use params
+  workflow_dispatch: {}
 
 permissions:
-  contents: write   
+  contents: write
 
 jobs:
   train:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v3
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.12"
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
 
-    - name: Install dependencies
-      run: |
-        pip install -r requirements.txt
-        pip install dvc jq
+      - name: Install system tools (jq, bc)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq bc
 
-    # Restore cached DVC data
-    - name: Restore DVC cache
-      uses: actions/cache@v3
-      with:
-        path: ./dvc-cache
-        key: dvc-cache-${{ github.sha }}
-        restore-keys: |
-          dvc-cache-
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install dvc
 
-    # Configure DVC to use local cache as remote
-    - name: Configure local DVC remote
-      run: |
-        dvc remote add -d localremote ./dvc-cache || true
+      # Cache DVC object store
+      - name: Restore .dvc/cache
+        uses: actions/cache@v3
+        with:
+          path: .dvc/cache
+          key: dvc-obj-${{ runner.os }}-${{ hashFiles('**/*.dvc','dvc.lock') }}
+          restore-keys: |
+            dvc-obj-${{ runner.os }}-
 
-    - name: Pull dataset from DVC remote
-      run: dvc pull -r localremote
+      # Cache the local file remote used in CI
+      - name: Restore dvc-remote
+        uses: actions/cache@v3
+        with:
+          path: ${{ github.workspace }}/dvc-remote
+          key: dvc-remote-${{ runner.os }}-${{ hashFiles('**/*.dvc','dvc.lock') }}
+          restore-keys: |
+            dvc-remote-${{ runner.os }}-
 
-    - name: Reproduce pipeline
-      run: dvc repro
+      # Make a workspace-local remote and use it for this run
+      - name: Configure local DVC remote for CI
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dvc-remote"
+          dvc remote add -f -d localremote "$GITHUB_WORKSPACE/dvc-remote"
 
-    - name: Compare metrics
-      run: |
-        git show HEAD:metrics.json > old_metrics.json || echo "{}" > old_metrics.json
-        echo "Old metrics:" && cat old_metrics.json
-        echo "New metrics:" && cat metrics.json
+      - name: Pull data (best effort) and materialize files
+        run: |
+          dvc pull -r localremote || true
+          dvc checkout || true
 
-        old_mae=$(jq '.MAE' old_metrics.json)
-        new_mae=$(jq '.MAE' metrics.json)
+      - name: Reproduce pipeline
+        run: dvc repro
 
-        echo "Old MAE: $old_mae, New MAE: $new_mae"
+      - name: Compare metrics and push artifacts if improved
+        run: |
+          git show HEAD:metrics.json > old_metrics.json || echo "{}" > old_metrics.json
+          echo "Old metrics:" && cat old_metrics.json || true
+          echo "New metrics:" && cat metrics.json || true
 
-        if (( $(echo "$new_mae < $old_mae" | bc -l) )); then
-          echo "Improvement found, committing updated pipeline metadata..."
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          # only commit metadata, NOT model.pkl
-          git add metrics.json dvc.lock
-          git commit -m "Update pipeline: MAE improved to $new_mae"
-          git push
-          # push the actual model.pkl + data to DVC remote
-          dvc push -r localremote
-        else
-          echo "No improvement, keeping old model."
-        fi
+          old_mae=$(jq -r '.MAE // empty' old_metrics.json)
+          new_mae=$(jq -r '.MAE // empty' metrics.json)
 
-    # Save updated DVC cache back to GitHub cache
-    - name: Save DVC cache
-      uses: actions/cache@v3
-      with:
-        path: ./dvc-cache
-        key: dvc-cache-${{ github.sha }}
+          if [ -n "$new_mae" ] && { [ -z "$old_mae" ] || (( $(echo "$new_mae < ($old_mae:-1e99)" | bc -l) )); }; then
+            echo "Improvement found, committing updated pipeline metadata..."
+            git config user.name github-actions
+            git config user.email github-actions@github.com
+            git add metrics.json dvc.lock
+            git commit -m "Update pipeline: MAE improved to $new_mae" || true
+            git push || true
+          else
+            echo "No improvement."
+          fi
+
+          # Populate the local remote for future CI runs
+          dvc push -r localremote || true
